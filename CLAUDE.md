@@ -1,0 +1,1 @@
+Always make tests for any feature you implement. First consider all edge cases, then create tests for the functions.
