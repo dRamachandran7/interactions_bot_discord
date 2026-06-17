@@ -10,8 +10,9 @@ from discord.ext import commands, tasks
 from openai import OpenAI
 
 import config
-from database import get_rank, init_db, save_bad_interaction
+from database import get_rank, get_worst_interactions, init_db, save_bad_interaction
 from scorer import check_slurs, compute_final_score, score_with_grok
+from utils import format_snippet
 
 
 class InteractionBot(commands.Bot):
@@ -143,7 +144,7 @@ async def _post_bad_interaction(
 
 
 # ---------------------------------------------------------------------------
-# Bot instance + slash command
+# Bot instance + slash commands
 # ---------------------------------------------------------------------------
 
 bot = InteractionBot()
@@ -182,6 +183,21 @@ async def rate_command(interaction: discord.Interaction) -> None:
             messages,
             score,
         )
+
+
+@bot.tree.command(name="list", description="Show the 10 worst interactions on this server")
+async def list_command(interaction: discord.Interaction) -> None:
+    entries = get_worst_interactions(str(interaction.guild_id))
+    if not entries:
+        await interaction.response.send_message("No bad interactions recorded yet.")
+        return
+
+    parts = ["**Worst Interactions of All Time**\n"]
+    for entry in entries:
+        snippet = format_snippet(entry["messages"])
+        parts.append(f"**#{entry['rank']}** · {entry['score']}/10\n{snippet}")
+
+    await interaction.response.send_message("\n\n".join(parts))
 
 
 if __name__ == "__main__":

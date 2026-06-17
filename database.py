@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import config
@@ -28,6 +29,28 @@ def save_bad_interaction(
             " VALUES (?, ?, ?, ?)",
             (guild_id, channel_id, messages_json, score),
         )
+
+
+def get_worst_interactions(guild_id: str, limit: int = 10) -> list[dict]:
+    """Return up to *limit* worst (lowest score) interactions for this guild.
+
+    Each entry has keys: rank (1=worst), score, messages (list), timestamp.
+    """
+    with sqlite3.connect(config.DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT score, messages, timestamp FROM bad_interactions"
+            " WHERE guild_id = ? ORDER BY score ASC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+    return [
+        {
+            "rank": i + 1,
+            "score": row[0],
+            "messages": json.loads(row[1]),
+            "timestamp": row[2],
+        }
+        for i, row in enumerate(rows)
+    ]
 
 
 def get_rank(guild_id: str, score: float) -> int:

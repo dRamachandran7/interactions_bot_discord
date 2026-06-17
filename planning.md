@@ -12,6 +12,8 @@ Create a bot for the messaging platform Discord that rates interactions between 
 
 "This interaction was a [x]/10"
 
+**Function 3** When a user enteres the '/list' command, the bot should send a message with the top 10 worst scored interactions. 
+
 ## Interaction Scoring
 
 The score of the interaction should be scored as follows:

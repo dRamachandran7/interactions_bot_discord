@@ -1,12 +1,14 @@
-"""Tests for database.py — leaderboard save and ranking."""
+"""Tests for database.py — leaderboard save, ranking, and worst-list query."""
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
 
 import config
 import database
+from database import get_worst_interactions
 
 
 # All tests use the tmp_db fixture from conftest.py which redirects DB_PATH.
@@ -121,3 +123,60 @@ class TestGetRank:
         # 3.9 is least-bad: 2 rows < 3.9 → rank 3
         rank = database.get_rank("g", 3.9)
         assert rank == 3
+
+
+class TestGetWorstInteractions:
+    def test_empty_db_returns_empty_list(self, tmp_db):
+        assert get_worst_interactions("g") == []
+
+    def test_returns_worst_first(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 3.0)
+        database.save_bad_interaction("g", "c", "[]", 1.0)
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        scores = [e["score"] for e in get_worst_interactions("g")]
+        assert scores == [1.0, 2.0, 3.0]
+
+    def test_rank_starts_at_one(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        result = get_worst_interactions("g")
+        assert result[0]["rank"] == 1
+
+    def test_ranks_are_sequential(self, tmp_db):
+        for score in [3.0, 1.0, 2.0]:
+            database.save_bad_interaction("g", "c", "[]", score)
+        ranks = [e["rank"] for e in get_worst_interactions("g")]
+        assert ranks == [1, 2, 3]
+
+    def test_default_limit_is_ten(self, tmp_db):
+        for i in range(15):
+            database.save_bad_interaction("g", "c", "[]", float(i))
+        assert len(get_worst_interactions("g")) == 10
+
+    def test_custom_limit_respected(self, tmp_db):
+        for i in range(8):
+            database.save_bad_interaction("g", "c", "[]", float(i))
+        assert len(get_worst_interactions("g", limit=5)) == 5
+
+    def test_fewer_entries_than_limit(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 1.0)
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        assert len(get_worst_interactions("g")) == 2
+
+    def test_messages_are_parsed_from_json(self, tmp_db):
+        msgs = [{"author": "Alice", "content": "hello"}]
+        database.save_bad_interaction("g", "c", json.dumps(msgs), 1.0)
+        result = get_worst_interactions("g")
+        assert result[0]["messages"] == msgs
+
+    def test_includes_timestamp(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 1.0)
+        result = get_worst_interactions("g")
+        assert result[0]["timestamp"] is not None
+
+    def test_guild_isolation(self, tmp_db):
+        database.save_bad_interaction("guild_A", "c", "[]", 1.0)
+        database.save_bad_interaction("guild_B", "c", "[]", 2.0)
+        assert len(get_worst_interactions("guild_A")) == 1
+        assert len(get_worst_interactions("guild_B")) == 1
+        assert get_worst_interactions("guild_A")[0]["score"] == 1.0
+        assert get_worst_interactions("guild_B")[0]["score"] == 2.0
