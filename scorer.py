@@ -43,8 +43,23 @@ _SLUR_RE = re.compile(
 # System prompt kept deliberately short to minimise input tokens.
 # "retarded" here means a dumb/low-quality exchange (colloquial usage).
 _SYSTEM_PROMPT = (
-    'Rate this Discord chat. JSON only: {"intellectual":0-10,"retarded":false}\n'
-    "retarded=true means the exchange is dumb or nonsensical."
+    'Rate this Discord chat. JSON only: {"intellectual":0.0,"retarded":false}\n'
+    "intellectual is a float 0.0–10.0 with one decimal place. retarded=true means dumb or nonsensical."
+)
+
+_REASONING_SYSTEM_PROMPT = (
+    "You are a sly, mischievous, but fun agent who roasts Discord conversations with sharp wit "
+    "and playful cruelty. Your job is to skewer the intellectual (or severe lack thereof) content "
+    "of whatever brain-dead exchange you're presented with. "
+    "Your favorite word to call people is \"jackass\" — use it at any given opportunity, but never "
+    "more than once per sentence. Keep your roast to 2–3 punchy sentences. Be creative, be savage, "
+    "and be funny."
+)
+
+_TIEBREAK_SYSTEM_PROMPT = (
+    "You are the arbiter of stupidity. Given two Discord conversations, decide which is more "
+    "nonsensical or intellectually bankrupt. "
+    'Return JSON only: {"winner":1} if the first is more retarded, {"winner":2} if the second.'
 )
 
 
@@ -77,6 +92,51 @@ def score_with_grok(client: OpenAI, messages: list[dict]) -> dict:
         response_format={"type": "json_object"},
     )
     return json.loads(response.choices[0].message.content)
+
+
+def generate_reasoning(client: OpenAI, messages: list[dict]) -> str:
+    """Generate a savage 2-3 sentence roast of the interaction."""
+    text = _format_messages(messages)
+    response = client.chat.completions.create(
+        model=config.GROK_MODEL,
+        messages=[
+            {"role": "system", "content": _REASONING_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        max_tokens=config.GROK_REASONING_MAX_TOKENS,
+        temperature=0.8,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def tiebreak_interactions(
+    client: OpenAI,
+    messages_a: list[dict],
+    messages_b: list[dict],
+) -> int:
+    """Return 1 if messages_a is more retarded, 2 if messages_b is.
+
+    Raises on API or JSON parse errors — callers should catch.
+    """
+    text_a = _format_messages(messages_a)
+    text_b = _format_messages(messages_b)
+    prompt = (
+        f"Interaction 1:\n{text_a}\n\n"
+        f"Interaction 2:\n{text_b}\n\n"
+        "Which is more retarded?"
+    )
+    response = client.chat.completions.create(
+        model=config.GROK_MODEL,
+        messages=[
+            {"role": "system", "content": _TIEBREAK_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=config.GROK_TIEBREAK_MAX_TOKENS,
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+    result = json.loads(response.choices[0].message.content)
+    return int(result.get("winner", 1))
 
 
 def compute_final_score(

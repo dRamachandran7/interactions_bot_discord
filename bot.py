@@ -6,12 +6,25 @@ from collections import defaultdict, deque
 from datetime import datetime
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from openai import OpenAI
 
 import config
-from database import get_rank, get_worst_interactions, init_db, save_bad_interaction
-from scorer import check_slurs, compute_final_score, score_with_grok
+from database import (
+    get_tied_interaction,
+    get_worst_interactions,
+    init_db,
+    save_bad_interaction,
+    update_interaction_score,
+)
+from scorer import (
+    check_slurs,
+    compute_final_score,
+    generate_reasoning,
+    score_with_grok,
+    tiebreak_interactions,
+)
 from utils import format_snippet
 
 
@@ -116,7 +129,7 @@ class InteractionBot(commands.Bot):
         score, is_retarded = compute_final_score(grok_result, has_slur, has_nword)
 
         if score <= config.BAD_INTERACTION_THRESHOLD or is_retarded:
-            await _post_bad_interaction(channel, str(channel.guild.id), messages, score)
+            await _post_bad_interaction(channel, str(channel.guild.id), messages, score, self._grok)
 
         return score
 
@@ -128,7 +141,38 @@ class InteractionBot(commands.Bot):
 
 
 # ---------------------------------------------------------------------------
-# Helper: save to leaderboard + post Function-1 message
+# Tiebreak helper: if a tied score exists, ask Grok which is worse
+# ---------------------------------------------------------------------------
+
+async def _resolve_tie(
+    grok_client: OpenAI,
+    guild_id: str,
+    messages: list[dict],
+    score: float,
+) -> float:
+    """Return a tie-broken score. Adjusts the existing tied entry if it loses."""
+    tied = get_tied_interaction(guild_id, score)
+    if tied is None:
+        return score
+    try:
+        winner = await asyncio.to_thread(
+            tiebreak_interactions, grok_client, messages, tied["messages"]
+        )
+    except Exception as exc:
+        print(f"[scorer] Tiebreak error: {exc}")
+        return score
+
+    if winner == 1:
+        # new interaction is more retarded → give it a slightly lower score to rank worse
+        return score - 0.001
+    else:
+        # existing is more retarded → lower its score so it ranks worse
+        update_interaction_score(tied["id"], tied["score"] - 0.001)
+        return score
+
+
+# ---------------------------------------------------------------------------
+# Helper: save to leaderboard + post Grok-generated ridicule
 # ---------------------------------------------------------------------------
 
 async def _post_bad_interaction(
@@ -136,11 +180,19 @@ async def _post_bad_interaction(
     guild_id: str,
     messages: list[dict],
     score: float,
+    grok_client: OpenAI,
 ) -> None:
+    score = await _resolve_tie(grok_client, guild_id, messages, score)
     messages_json = json.dumps(messages)
     save_bad_interaction(guild_id, str(channel.id), messages_json, score)
-    rank = get_rank(guild_id, score)
-    await channel.send(f"Bottom {rank} interaction of all time.")
+
+    try:
+        ridicule = await asyncio.to_thread(generate_reasoning, grok_client, messages)
+    except Exception as exc:
+        print(f"[scorer] Reasoning error: {exc}")
+        ridicule = "Truly a bottom-tier interaction."
+
+    await channel.send(ridicule)
 
 
 # ---------------------------------------------------------------------------
@@ -150,38 +202,41 @@ async def _post_bad_interaction(
 bot = InteractionBot()
 
 
-@bot.tree.command(name="rate", description="Rate the most recent interaction in this channel")
-async def rate_command(interaction: discord.Interaction) -> None:
+@bot.tree.command(name="rate", description="Rate the most recent N messages as one interaction")
+async def rate_command(
+    interaction: discord.Interaction,
+    count: app_commands.Range[int, 1, 10] = 5,  # type: ignore[valid-type]
+) -> None:
     await interaction.response.defer()
 
     buf = bot._buffers[interaction.channel_id]
-    messages = list(buf)
+    messages = list(buf)[-count:]
 
     if not messages:
-        await interaction.followup.send("No recent interaction to rate.")
+        await interaction.followup.send("No recent messages to rate.")
         return
 
     all_text = " ".join(m["content"] for m in messages)
     has_slur, has_nword = check_slurs(all_text)
 
     try:
-        grok_result = await asyncio.to_thread(
-            score_with_grok, bot._grok, messages
-        )
+        grok_result = await asyncio.to_thread(score_with_grok, bot._grok, messages)
+        reasoning = await asyncio.to_thread(generate_reasoning, bot._grok, messages)
     except Exception as exc:
         print(f"[scorer] /rate Grok error: {exc}")
         await interaction.followup.send("Error contacting scoring service.")
         return
 
     score, is_retarded = compute_final_score(grok_result, has_slur, has_nword)
-    await interaction.followup.send(f"This interaction was a {score}/10")
+    await interaction.followup.send(f"Score: **{score}/10**\n\n{reasoning}")
 
     if score <= config.BAD_INTERACTION_THRESHOLD or is_retarded:
-        await _post_bad_interaction(
-            interaction.channel,  # type: ignore[arg-type]
+        adjusted_score = await _resolve_tie(bot._grok, str(interaction.guild_id), messages, score)
+        save_bad_interaction(
             str(interaction.guild_id),
-            messages,
-            score,
+            str(interaction.channel_id),
+            json.dumps(messages),
+            adjusted_score,
         )
 
 

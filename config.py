@@ -11,7 +11,9 @@ OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 GROK_MODEL = "x-ai/grok-4.3"
-GROK_MAX_TOKENS = 50  # JSON response is tiny: {"intellectual":7,"retarded":false}
+GROK_MAX_TOKENS = 60          # score JSON: {"intellectual":7.3,"retarded":false}
+GROK_REASONING_MAX_TOKENS = 200  # 2-3 sentence ridicule
+GROK_TIEBREAK_MAX_TOKENS = 20    # {"winner":1}
 
 # Conversation buffering
 CONVERSATION_WINDOW = 10     # max messages kept per channel

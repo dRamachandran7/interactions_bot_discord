@@ -8,7 +8,7 @@ import pytest
 
 import config
 import database
-from database import get_worst_interactions
+from database import get_tied_interaction, get_worst_interactions, update_interaction_score
 
 
 # All tests use the tmp_db fixture from conftest.py which redirects DB_PATH.
@@ -123,6 +123,79 @@ class TestGetRank:
         # 3.9 is least-bad: 2 rows < 3.9 → rank 3
         rank = database.get_rank("g", 3.9)
         assert rank == 3
+
+
+class TestGetTiedInteraction:
+    def test_returns_none_when_no_entries(self, tmp_db):
+        assert get_tied_interaction("g", 2.0) is None
+
+    def test_returns_none_when_no_match(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 1.0)
+        assert get_tied_interaction("g", 2.0) is None
+
+    def test_returns_entry_when_score_matches(self, tmp_db):
+        msgs = [{"author": "Alice", "content": "lol"}]
+        database.save_bad_interaction("g", "c", json.dumps(msgs), 2.0)
+        result = get_tied_interaction("g", 2.0)
+        assert result is not None
+        assert result["score"] == 2.0
+        assert result["messages"] == msgs
+
+    def test_returned_entry_has_id(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        result = get_tied_interaction("g", 2.0)
+        assert "id" in result
+        assert isinstance(result["id"], int)
+
+    def test_guild_isolation(self, tmp_db):
+        database.save_bad_interaction("guild_A", "c", "[]", 2.0)
+        # Same score but different guild — should not match
+        assert get_tied_interaction("guild_B", 2.0) is None
+
+    def test_returns_none_for_near_miss(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        # 2.001 is close but not identical
+        assert get_tied_interaction("g", 2.001) is None
+
+    def test_returns_one_result_when_multiple_tied(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        result = get_tied_interaction("g", 2.0)
+        assert result is not None  # returns one, not both
+
+
+class TestUpdateInteractionScore:
+    def test_updates_score(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        entry = get_tied_interaction("g", 2.0)
+        update_interaction_score(entry["id"], 1.5)
+        with sqlite3.connect(config.DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT score FROM bad_interactions WHERE id = ?", (entry["id"],)
+            ).fetchone()
+        assert row[0] == 1.5
+
+    def test_only_updates_target_row(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        database.save_bad_interaction("g", "c", "[]", 3.0)
+        entry = get_tied_interaction("g", 2.0)
+        update_interaction_score(entry["id"], 1.9)
+        # The 3.0 entry must be unchanged
+        with sqlite3.connect(config.DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT score FROM bad_interactions ORDER BY score ASC"
+            ).fetchall()
+        scores = [r[0] for r in rows]
+        assert 3.0 in scores
+        assert 1.9 in scores
+
+    def test_update_does_not_create_new_row(self, tmp_db):
+        database.save_bad_interaction("g", "c", "[]", 2.0)
+        entry = get_tied_interaction("g", 2.0)
+        update_interaction_score(entry["id"], 1.0)
+        with sqlite3.connect(config.DB_PATH) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM bad_interactions").fetchone()[0]
+        assert count == 1
 
 
 class TestGetWorstInteractions:
