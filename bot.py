@@ -45,6 +45,8 @@ class InteractionBot(commands.Bot):
         )
         # Per channel: when we last scored (for cooldown)
         self._last_scored: dict[int, datetime] = {}
+        # Per channel: when the bot last auto-posted a ridicule (independent of /rate)
+        self._last_auto_posted: dict[int, datetime] = {}
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
@@ -129,7 +131,9 @@ class InteractionBot(commands.Bot):
         score, is_retarded = compute_final_score(grok_result, has_slur, has_nword)
 
         if score <= config.BAD_INTERACTION_THRESHOLD or is_retarded:
-            await _post_bad_interaction(channel, str(channel.guild.id), messages, score, self._grok)
+            if not self._auto_post_on_cooldown(channel.id):
+                self._last_auto_posted[channel.id] = datetime.now()
+                await _post_bad_interaction(channel, str(channel.guild.id), messages, score, self._grok)
 
         return score
 
@@ -138,6 +142,12 @@ class InteractionBot(commands.Bot):
         if last is None:
             return False
         return (datetime.now() - last).total_seconds() < config.SCORE_COOLDOWN_SECONDS
+
+    def _auto_post_on_cooldown(self, channel_id: int) -> bool:
+        last = self._last_auto_posted.get(channel_id)
+        if last is None:
+            return False
+        return (datetime.now() - last).total_seconds() < config.AUTO_POST_COOLDOWN_SECONDS
 
 
 # ---------------------------------------------------------------------------

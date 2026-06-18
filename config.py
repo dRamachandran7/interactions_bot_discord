@@ -26,6 +26,10 @@ BAD_INTERACTION_THRESHOLD = 4.0
 # Minimum seconds between automatic scores for the same channel (avoids spam)
 SCORE_COOLDOWN_SECONDS = 60
 
+# Minimum seconds between automatic bot posts (ridicule) per channel.
+# /rate is NOT affected by this limit.
+AUTO_POST_COOLDOWN_SECONDS = 60
+
 # Periodic background check interval (minutes)
 BACKGROUND_CHECK_INTERVAL_MINUTES = 5
 
